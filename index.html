@@ -199,31 +199,46 @@ function openDest(id){current=id;const d=data.find(x=>x.n===id);if(!d)return;doc
 function closeModal(){modal.classList.remove('open');document.body.style.overflow=''}
 document.querySelectorAll('.destination').forEach(b=>b.addEventListener('click',()=>openDest(Number(b.dataset.id))));document.getElementById('closeBtn').onclick=closeModal;modal.addEventListener('click',e=>{if(e.target===modal)closeModal()});document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 let pendingSubmission=null;
-window.addEventListener('message',event=>{
-  // Validate the one-time submission token instead of relying on Google's variable iframe origin.
-  const data=event.data;
-  if(!data || data.type!=='reader-grade' || !pendingSubmission || data.token!==pendingSubmission.token)return;
-  const score=Number(data.score);
-  if(!Number.isInteger(score)||score<0||score>8)return;
-  const box=document.getElementById('gradeBox');
-  box.textContent='درجتك: '+score+' من 8';box.style.display='block';
-  const msg=document.getElementById('formMessage');msg.className='form-message success';msg.textContent='تم استلام إجاباتك. انتقلي إلى المحطة التالية.';
-  const btn=document.getElementById('submitQuiz');btn.disabled=false;btn.textContent='تم إرسال الإجابات ✓';
-  let v=loadVisited();if(!v.includes(pendingSubmission.station))v.push(pendingSubmission.station);saveVisited(v);paintVisited();pendingSubmission=null;
-});
+function finishGrade(score){
+ if(!pendingSubmission)return;
+ const box=document.getElementById('gradeBox');
+ box.textContent='درجتك: '+score+' من 8';box.style.display='block';
+ const msg=document.getElementById('formMessage');msg.className='form-message success';msg.textContent='تم استلام إجاباتك. انتقلي إلى المحطة التالية.';
+ const btn=document.getElementById('submitQuiz');btn.disabled=false;btn.textContent='تم إرسال الإجابات ✓';
+ let v=loadVisited();if(!v.includes(pendingSubmission.station))v.push(pendingSubmission.station);saveVisited(v);paintVisited();pendingSubmission=null;
+}
+// Read only the score associated with this one-time random token; no answers are exposed.
+window.readerGradeCallback=function(result){
+ if(!pendingSubmission||!result||result.token!==pendingSubmission.token)return;
+ const score=Number(result.score);
+ if(result.status==='ready'&&Number.isInteger(score)&&score>=0&&score<=8)finishGrade(score);
+};
+function requestGrade(token){
+ if(!pendingSubmission||pendingSubmission.token!==token)return;
+ const script=document.createElement('script');
+ script.src=SUBMIT_URL+'?gradeToken='+encodeURIComponent(token)+'&callback=readerGradeCallback&_='+Date.now();
+ script.onerror=()=>{};document.head.appendChild(script);
+ setTimeout(()=>script.remove(),8000);
+}
 document.getElementById('quizForm').addEventListener('submit',e=>{
  e.preventDefault();const name=document.getElementById('studentName').value.trim(),className=document.getElementById('studentClass').value.trim(),msg=document.getElementById('formMessage');
  const answers=[];for(let i=1;i<=8;i++){const x=document.querySelector(`input[name="q${i}"]:checked`);answers.push(x?x.value:'')}
  if(!name||!className){msg.className='form-message error';msg.textContent='اكتبي الاسم والفصل أولًا.';return}
  if(answers.some(x=>!x)){msg.className='form-message error';msg.textContent='أجيبي عن الأسئلة الثمانية قبل الإرسال.';return}
  const btn=document.getElementById('submitQuiz'),box=document.getElementById('gradeBox');box.style.display='none';btn.disabled=true;btn.textContent='جارٍ إرسال الإجابات…';
- const token=String(Date.now())+'-'+Math.random().toString(36).slice(2);pendingSubmission={token,station:current};
+ const random=new Uint8Array(16);crypto.getRandomValues(random);
+ const token=Array.from(random,x=>x.toString(16).padStart(2,'0')).join('');pendingSubmission={token,station:current};
  const form=document.createElement('form');form.method='POST';form.action=SUBMIT_URL;form.target='submitFrame';form.style.display='none';
  const fields={name,className,station:String(current),token};answers.forEach((v,i)=>fields['q'+(i+1)]=v);
  Object.entries(fields).forEach(([k,v])=>{const inp=document.createElement('input');inp.name=k;inp.value=v;form.appendChild(inp)});
  document.body.appendChild(form);form.submit();setTimeout(()=>form.remove(),2000);
  msg.className='form-message';msg.textContent='جارٍ انتظار النتيجة…';
- setTimeout(()=>{if(pendingSubmission&&pendingSubmission.token===token){btn.disabled=false;btn.textContent='إعادة محاولة الإرسال';msg.className='form-message error';msg.textContent='تم إرسال الطلب، لكن تعذّر عرض الدرجة. تحققي من جدول النتائج قبل إعادة الإرسال.';}},20000);
+ // Poll independently of the POST iframe. Polling never submits duplicate answers.
+ let attempts=0;const timer=setInterval(()=>{
+   if(!pendingSubmission||pendingSubmission.token!==token){clearInterval(timer);return}
+   if(++attempts>15){clearInterval(timer);btn.disabled=true;btn.textContent='تم إرسال الإجابات';msg.className='form-message error';msg.textContent='قد تكون الإجابات سُجلت، لكن تعذّر عرض الدرجة. تحققي من جدول النتائج قبل أي إعادة إرسال.';return}
+   requestGrade(token);
+ },2000);
 });
 document.getElementById('prevBtn').onclick=()=>openDest(current===1?12:current-1);document.getElementById('nextBtn').onclick=()=>openDest(current===12?1:current+1);
 paintVisited();
